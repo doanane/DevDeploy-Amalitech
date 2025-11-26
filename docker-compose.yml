@@ -1,35 +1,29 @@
-# docker-compose.yml
-# Docker Compose file version
 version: '3.8'
 
-# Define services (containers)
 services:
-  # Web application service
   web:
-    build: .  # Build image from current directory Dockerfile
+    build: .
     ports:
-      - "8000:8000"  # Map host port 8000 to container port 8000
+      - "8000:8000"
     environment:
-      - DATABASE_URL=postgresql+psycopg2://postgres:password@db:5432/DevDeploy
-      - SECRET_KEY=your-super-secret-key-here
+      - DATABASE_URL=postgresql+psycopg2://postgres:${POSTGRES_PASSWORD:-password}@db:5432/DevDeploy
+      - SECRET_KEY=${SECRET_KEY:-your-super-secret-key-here}
     depends_on:
-      - db  # Start db service before web service
+      - db
     volumes:
-      - .:/app  # Mount current directory to /app in container (for development)
+      - .:/app
     command: uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
 
-  # PostgreSQL database service
   db:
-    image: postgres:13  # Use PostgreSQL 13 image
+    image: postgres:13
     environment:
-      - POSTGRES_DB=DevDeploy  # Database name
-      - POSTGRES_USER=postgres  # Database user
-      - POSTGRES_PASSWORD=password  # Database password
+      - POSTGRES_DB=DevDeploy
+      - POSTGRES_USER=postgres
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:-password}
     ports:
-      - "5432:5432"  # Map host port 5432 to container port 5432
+      - "5432:5432"
     volumes:
-      - postgres_data:/var/lib/postgresql/data  # Persistent data volume
+      - postgres_data:/var/lib/postgresql/data
 
-# Define volumes for data persistence
 volumes:
-  postgres_data:  # Named volume for PostgreSQL data
+  postgres_data:
