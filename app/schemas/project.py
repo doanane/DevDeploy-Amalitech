@@ -1,8 +1,7 @@
-# app/schemas/project.py
-from pydantic import BaseModel, validator
+from pydantic import BaseModel, field_validator  # Change to field_validator
 import re
-from datetime import datetime  # Import for datetime fields
-
+from datetime import datetime
+from typing import List
 
 class ProjectBase(BaseModel):
     name: str
@@ -10,7 +9,8 @@ class ProjectBase(BaseModel):
     branch: str = "main"
     status: str = "active"
 
-    @validator('repository_url')
+    @field_validator('repository_url')  # Change to field_validator
+    @classmethod  # Add classmethod
     def validate_repository_url(cls, v):
         # Basic GitHub/GitLab URL validation
         url_pattern = r'^https?://(github\.com|gitlab\.com)/[a-zA-Z0-9_.-]+/[a-zA-Z0-9_.-]+/?$'
@@ -18,7 +18,8 @@ class ProjectBase(BaseModel):
             raise ValueError('Repository URL must be a valid GitHub or GitLab URL')
         return v
 
-    @validator('status')
+    @field_validator('status')  # Change to field_validator
+    @classmethod  # Add classmethod
     def validate_status(cls, v):
         if v not in ['active', 'archived']:
             raise ValueError('Status must be either "active" or "archived"')

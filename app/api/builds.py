@@ -9,7 +9,7 @@ from app.schemas.build import BuildCreate, Build as BuildSchema, BuildSummary
 from app.api.auth import get_current_user
 from app.services.build_runner import simulate_build, trigger_build
 
-router = APIRouter(prefix="/builds", tags=["builds"])
+router = APIRouter(prefix="", tags=["builds"])
 
 @router.post("/projects/{project_id}/builds", response_model=BuildSchema, operation_id="trigger_build")
 def create_build(
@@ -46,7 +46,7 @@ def create_build(
         commit_message=build_data.commit_message
     )
     
-    background_tasks.add_task(simulate_build, db, new_build.id)
+    background_tasks.add_task(simulate_build, new_build.id)
     
     return new_build
 
@@ -80,7 +80,7 @@ def get_project_builds(
     
     return builds
 
-@router.get("/{build_id}", response_model=BuildSchema, operation_id="get_build")
+@router.get("/builds/{build_id}", response_model=BuildSchema, operation_id="get_build")  # Added /builds prefix
 def get_build(
     build_id: int,
     db: Session = Depends(get_db),
@@ -102,7 +102,7 @@ def get_build(
     
     return build
 
-@router.get("/{build_id}/logs", operation_id="get_build_logs")
+@router.get("/builds/{build_id}/logs", operation_id="get_build_logs")  # Added /builds prefix
 def get_build_logs(
     build_id: int,
     db: Session = Depends(get_db),
