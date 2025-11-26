@@ -34,7 +34,7 @@ def simulate_build(db: Session, build_id: int):
     
     try:
         # Simulate different build stages
-        
+        # log messages
         # Stage 1: Fetching source code
         logs.append("Starting build process...")
         logs.append("Stage 1: Fetching source code from repository")
