@@ -22,7 +22,7 @@ class BuildCreate(BuildBase):
     Used when a user triggers a new build
     """
     # 'pass' means this class doesn't add any new fields
-    # It uses all the fields from BuildBase
+    # It uses all the fields from BuildBase ok
     pass
 
 class Build(BuildBase):
