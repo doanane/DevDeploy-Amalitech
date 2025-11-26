@@ -6,6 +6,7 @@ from app.models import user, project, build  # Import models to create tables
 from app.api import auth, projects, builds  # Import API routers
 from app.core.config import settings  # Import settings
 
+
 # Create all database tables
 # Base.metadata.create_all() creates tables for all models that inherit from Base
 # bind=engine: Use our database engine to create tables
