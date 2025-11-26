@@ -1,21 +1,21 @@
+# app/schemas/auth.py
 from pydantic import BaseModel, EmailStr
-from typing import Optional
 
-class UserBase(BaseModel):
+class UserCreate(BaseModel):
     email: EmailStr
-
-class UserCreate(UserBase):
     password: str
 
-class User(UserBase):
+class UserResponse(BaseModel):
     id: int
+    email: EmailStr
     
     class Config:
         from_attributes = True
 
 class Token(BaseModel):
     access_token: str
-    token_type: str
+    token_type: str = "bearer"
 
-class TokenData(BaseModel):
-    email: Optional[str] = None
+class LoginRequest(BaseModel):
+    email: EmailStr
+    password: str

@@ -1,36 +1,36 @@
+# app/api/auth.py
 from fastapi import APIRouter, Depends, HTTPException, status
-from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
+from fastapi.security import HTTPBearer
 from sqlalchemy.orm import Session
 from app.database import get_db
 from app.models.user import User
-from app.schemas.auth import Token, UserCreate, User as UserSchema
+from app.schemas.auth import UserCreate, UserResponse, Token, LoginRequest
 from app.core.security import (
     verify_password, 
     get_password_hash, 
     create_access_token, 
     verify_token
 )
-from datetime import timedelta
 from app.core.config import settings
 
 router = APIRouter(prefix="/auth", tags=["authentication"])
 
-oauth2_scheme = OAuth2PasswordBearer(tokenUrl="auth/token")
+# Simple HTTP Bearer security scheme
+security = HTTPBearer()
 
-def authenticate_user(db: Session, email: str, password: str):
-    user = db.query(User).filter(User.email == email).first()
-    if not user or not verify_password(password, user.hashed_password):
-        return None
-    return user
-
-def get_current_user(token: str = Depends(oauth2_scheme), db: Session = Depends(get_db)):
+def get_current_user(token: str = Depends(security), db: Session = Depends(get_db)):
+    """
+    Dependency to get current user from Bearer token
+    """
     credentials_exception = HTTPException(
         status_code=status.HTTP_401_UNAUTHORIZED,
-        detail="Could not validate credentials",
-        headers={"WWW-Authenticate": "Bearer"},
+        detail="Invalid authentication credentials",
     )
     
+    # Extract token from HTTPBearer
+    token = token.credentials
     email = verify_token(token)
+    
     if email is None:
         raise credentials_exception
     
@@ -40,8 +40,12 @@ def get_current_user(token: str = Depends(oauth2_scheme), db: Session = Depends(
     
     return user
 
-@router.post("/signup", response_model=UserSchema)
+@router.post("/signup", response_model=UserResponse)
 def signup(user_data: UserCreate, db: Session = Depends(get_db)):
+    """
+    Create new user account
+    """
+    # Check if user already exists
     existing_user = db.query(User).filter(User.email == user_data.email).first()
     if existing_user:
         raise HTTPException(
@@ -49,6 +53,7 @@ def signup(user_data: UserCreate, db: Session = Depends(get_db)):
             detail="Email already registered"
         )
     
+    # Create new user
     hashed_password = get_password_hash(user_data.password)
     new_user = User(
         email=user_data.email,
@@ -61,23 +66,29 @@ def signup(user_data: UserCreate, db: Session = Depends(get_db)):
     
     return new_user
 
-@router.post("/token", response_model=Token)
-def login_for_access_token(
-    form_data: OAuth2PasswordRequestForm = Depends(), 
-    db: Session = Depends(get_db)
-):
-    user = authenticate_user(db, form_data.username, form_data.password)
-    if not user:
+@router.post("/login", response_model=Token)
+def login(login_data: LoginRequest, db: Session = Depends(get_db)):
+    """
+    User login - returns access token
+    """
+    # Find user by email
+    user = db.query(User).filter(User.email == login_data.email).first()
+    if not user or not verify_password(login_data.password, user.hashed_password):
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Incorrect email or password",
-            headers={"WWW-Authenticate": "Bearer"},
         )
     
-    access_token_expires = timedelta(minutes=settings.access_token_expire_minutes)
-    access_token = create_access_token(
-        data={"sub": user.email}, 
-        expires_delta=access_token_expires
-    )
+    # Create access token
+    access_token = create_access_token(data={"sub": user.email})
     
     return {"access_token": access_token, "token_type": "bearer"}
+
+# Add to app/api/auth.py
+@router.post("/refresh")
+def refresh_token(current_user: User = Depends(get_current_user)):
+    """
+    Refresh access token
+    """
+    new_access_token = create_access_token(data={"sub": current_user.email})
+    return {"access_token": new_access_token, "token_type": "bearer"}
