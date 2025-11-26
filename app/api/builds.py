@@ -11,7 +11,6 @@ from app.services.build_runner import simulate_build, trigger_build
 
 router = APIRouter(prefix="/builds", tags=["builds"])
 
-
 @router.post("/projects/{project_id}/builds", response_model=BuildSchema, operation_id="trigger_build")
 def create_build(
     project_id: int,
