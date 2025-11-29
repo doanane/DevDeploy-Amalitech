@@ -13,4 +13,5 @@ class Settings(BaseSettings):
 class Config:
     case_sensitive = False
 
+# Instantiate the settings object so that i can import it anywhere in the project
 settings = Settings()

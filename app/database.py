@@ -8,6 +8,7 @@ from dotenv import load_dotenv
 load_dotenv()
 DATABASE_URL = os.getenv("DATABASE_URL")
 
+# this will set up the database engine and session
 engine=create_engine(DATABASE_URL, echo=True)
 
 SessionLocal=sessionmaker(autocommit=False, autoflush=False, bind=engine)
@@ -15,7 +16,8 @@ Base= declarative_base()
 
 def get_db():
     db= SessionLocal()
+    
     try:
-        yield db
+        yield db # yield the database session
     finally:
         db.close()
