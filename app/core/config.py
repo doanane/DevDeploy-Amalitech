@@ -1,17 +1,29 @@
+# app/core/config.py
 from pydantic_settings import BaseSettings
-import os 
-from dotenv import load_dotenv
-load_dotenv()
+from typing import Optional
+import os
 
 class Settings(BaseSettings):
-    database_url:str= os.getenv("DATABASE_URL")
-    secret_key:str=os.getenv("SECRET_KEY", "fallback_secret_key")
-    algorithm:str=os.getenv("Algorithm", "HS256")
-    access_token_expire_minutes:int=int(os.getenv("ACCESS_TOKEN_EXPIRE_MINUTES", 30))
+    # Use different default based on environment
+    database_url: str = "postgresql+psycopg2://postgres:password@localhost:5432/DevDeploy"
+    secret_key: str = "your-fallback-secret-key-change-in-production"
+    algorithm: str = "HS256"
+    access_token_expire_minutes: int = 30
+    
+    # Detect if running in Docker
+    in_docker: bool = False
+    
+    class Config:
+        env_file = ".env"
+        case_sensitive = False
+    
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
+        # Detect Docker environment
+        self.in_docker = os.path.exists("/.dockerenv")
+        
+        # If in Docker and using default localhost URL, switch to Docker URL
+        if self.in_docker and "localhost" in self.database_url:
+            self.database_url = "postgresql+psycopg2://postgres:password@db:5432/DevDeploy"
 
-
-class Config:
-    case_sensitive = False
-
-# Instantiate the settings object so that i can import it anywhere in the project
 settings = Settings()

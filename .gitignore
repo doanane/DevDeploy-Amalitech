@@ -8,7 +8,7 @@ venv/
 .venv
 .ven
 .venv/
-
+.env.docker
 env/
 .idea/
 .DS_Store

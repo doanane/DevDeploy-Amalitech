@@ -1,12 +1,10 @@
-version: '3.8'
-
 services:
   web:
     build: .
     ports:
       - "8000:8000"
     environment:
-      - DATABASE_URL=postgresql+psycopg2://postgres:${POSTGRES_PASSWORD:-password}@db:5432/DevDeploy
+      - DATABASE_URL=postgresql+psycopg2://postgres:password123@db:5432/DevDeploy  # SIMPLE PASSWORD
       - SECRET_KEY=${SECRET_KEY:-your-super-secret-key-here}
     depends_on:
       - db
@@ -15,11 +13,11 @@ services:
     command: uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
 
   db:
-    image: postgres:13
+    image: postgres:15-alpine
     environment:
       - POSTGRES_DB=DevDeploy
       - POSTGRES_USER=postgres
-      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:-password}
+      - POSTGRES_PASSWORD=password123 
     ports:
       - "5432:5432"
     volumes:
