@@ -4,24 +4,33 @@ services:
     ports:
       - "8000:8000"
     environment:
-      - DATABASE_URL=postgresql+psycopg2://postgres:password123@db:5432/DevDeploy  # SIMPLE PASSWORD
-      - SECRET_KEY=${SECRET_KEY:-your-super-secret-key-here}
+      - DATABASE_URL=postgresql+psycopg2://postgres:password123@db:5432/DevDeploy
+      - SECRET_KEY=${SECRET_KEY}
     depends_on:
-      - db
+      db:
+        condition: service_healthy  # Wait for db to be healthy
     volumes:
       - .:/app
-    command: uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
+    command: >
+      sh -c "echo 'Waiting for database...' &&
+             sleep 10 &&
+             uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload"
 
   db:
     image: postgres:15-alpine
     environment:
       - POSTGRES_DB=DevDeploy
       - POSTGRES_USER=postgres
-      - POSTGRES_PASSWORD=password123 
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD}
     ports:
       - "5432:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
 
 volumes:
   postgres_data:
