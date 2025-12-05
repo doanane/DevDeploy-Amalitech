@@ -1,64 +1,90 @@
 # app/main.py
-# Import necessary components
-from fastapi import FastAPI  # Import FastAPI class
-from app.database import engine, Base  # Import database engine and Base
-from app.models import user, project, build  # Import models to create tables
-from app.api import auth, projects, builds  # Import API routers
-from app.core.config import settings  # Import settings
+import time
+from fastapi import FastAPI
+from sqlalchemy import text
+from app.database import engine, Base, SessionLocal
+from app.models import user, project, build, webhook
+from app.api import auth, projects, builds, webhooks
+from app.core.config import settings
 
+def wait_for_database(max_retries=30, delay_seconds=2):
+    """
+    Wait for database to be ready before creating tables
+    """
+    print("⏳ Waiting for database to be ready...")
+    
+    for attempt in range(max_retries):
+        try:
+            # Try to connect to database
+            with engine.connect() as conn:
+                conn.execute(text("SELECT 1"))
+            print("✅ Database connection successful!")
+            return True
+        except Exception as e:
+            if attempt < max_retries - 1:
+                print(f"Attempt {attempt + 1}/{max_retries}: Database not ready, retrying in {delay_seconds}s...")
+                time.sleep(delay_seconds)
+            else:
+                print(f"❌ Could not connect to database after {max_retries} attempts: {e}")
+                raise
+    
+    return False
+
+# Wait for database before creating tables
+wait_for_database()
 
 # Create all database tables
-# Base.metadata.create_all() creates tables for all models that inherit from Base
-# bind=engine: Use our database engine to create tables
-# In production, use Alembic migrations instead of this approach
 Base.metadata.create_all(bind=engine)
+print("✅ Database tables created successfully")
 
 # Create FastAPI application instance
 app = FastAPI(
-    title="DevDeploy API",  # API title for documentation
-    description="CI/CD Pipeline Monitoring & Automation API",  # API description
-    version="1.0.0",  # API version
-    docs_url="/docs",  # URL for Swagger UI documentation
-    redoc_url="/redoc"  # URL for ReDoc documentation
+    title="DevDeploy API",
+    description="CI/CD Pipeline Monitoring & Automation API",
+    version="1.0.0",
+    docs_url="/docs",
+    redoc_url="/redoc"
 )
 
 # Include API routers
-# app.include_router() adds all routes from a router to the main application
-app.include_router(auth.router)  # Include authentication routes
-app.include_router(projects.router)  # Include project routes
+app.include_router(auth.router)
+app.include_router(projects.router)
 app.include_router(builds.router)
+app.include_router(webhooks.router)
 
 @app.get("/")
 def read_root():
     """
     Root endpoint - API welcome and health check
-    
-    Returns:
-        dict: Welcome message and API information
     """
     return {
         "message": "Welcome to DevDeploy API",
         "status": "running",
-        "version": "1.0.0"
+        "version": "1.0.0",
+        "features": {
+            "authentication": True,
+            "projects": True,
+            "builds": True,
+            "webhooks": True
+        }
     }
 
 @app.get("/health")
 def health_check():
     """
     Health check endpoint for monitoring
-    
-    Returns:
-        dict: Service health status
     """
-    return {"status": "healthy", "service": "DevDeploy API"}
+    try:
+        # Test database connection
+        with engine.connect() as conn:
+            conn.execute(text("SELECT 1"))
+        return {"status": "healthy", "service": "DevDeploy API", "database": "connected"}
+    except Exception as e:
+        return {"status": "unhealthy", "service": "DevDeploy API", "database": "disconnected", "error": str(e)}
 
 # This block runs only if the script is executed directly (not imported)
 if __name__ == "__main__":
-    import uvicorn  # Import uvicorn to run the server
+    import uvicorn
     
     # Run the FastAPI application with uvicorn
-    # "app.main:app": Import path to the FastAPI app (module:app_instance)
-    # host="0.0.0.0": Listen on all network interfaces
-    # port=8000: Listen on port 8000
-    # reload=True: Enable auto-reload during development
     uvicorn.run("app.main:app", host="0.0.0.0", port=8000, reload=True)

@@ -1,4 +1,4 @@
-﻿# app/api/webhooks.py
+# app/api/webhooks.py
 from fastapi import APIRouter, Depends, HTTPException, status, Header, Request, BackgroundTasks
 from fastapi.responses import JSONResponse
 from sqlalchemy.orm import Session

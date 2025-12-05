@@ -1,0 +1,79 @@
+# app/models/project.py
+# Import necessary SQLAlchemy components
+from sqlalchemy import Column, Integer, String, DateTime, ForeignKey  # Import column types and ForeignKey
+from sqlalchemy.orm import relationship  # Import relationship for model relationships
+from sqlalchemy.sql import func  # Import func for SQL functions like now()
+from app.database import Base  # Import Base class
+
+# Define Project model class
+class Project(Base):
+    """
+    Project model representing a software project being monitored by DevDeploy
+    
+    This model stores information about GitHub/GitLab repositories
+    that users want to track and deploy
+    """
+    
+    # Table name in database
+    __tablename__ = "projects"
+
+    # Define columns
+    
+    # Primary key
+    id = Column(Integer, primary_key=True, index=True)
+    
+    # Project name (e.g., "My Web Application")
+    # String(100): Maximum 100 characters
+    # nullable=False: Name is required
+    name = Column(String(100), nullable=False)
+    
+    # Git repository URL (e.g., "https://github.com/username/repository")
+    # String(500): Longer field for URLs
+    # nullable=False: URL is required
+    repository_url = Column(String(500), nullable=False)
+    
+    # Git branch to monitor (e.g., "main", "develop")
+    # default="main": Default value if not specified
+    branch = Column(String(100), default="main")
+    
+    # Project status: "active" or "archived"
+    # default="active": New projects are active by default
+    status = Column(String(20), default="active")
+    
+    # Automatic timestamp when project is created
+    # DateTime: Stores date and time
+    # timezone=True: Include timezone information
+    # server_default=func.now(): Database sets this automatically to current time
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    
+    # Foreign key to link project to user
+    # ForeignKey("users.id"): This column references the id column in users table
+    # This creates a relationship: each project belongs to one user
+    owner_id = Column(Integer, ForeignKey("users.id"))
+
+    # Define relationships
+    
+    # Relationship back to User model
+    # "User": The related model class
+    # back_populates="projects": Matches the relationship defined in User model
+    # This allows us to access the owner user from a project: project.owner
+    owner = relationship("User", back_populates="projects")
+    
+    # Relationship to Build model
+    # "Build": The related model class
+    # back_populates="project": Creates bidirectional relationship
+    # This means: a Project has many Builds
+    builds = relationship("Build", back_populates="project")
+
+
+    webhook_events = relationship("WebhookEvent", back_populates="project")
+    
+    # Add webhook configuration fields
+    webhook_secret = Column(String(255))  # Secret for webhook verification
+    webhook_url = Column(String(500))     # Generated webhook URL
+
+
+    owner = relationship("User", back_populates="projects")
+    builds = relationship("Build", back_populates="project")
+    webhook_events = relationship("WebhookEvent", back_populates="project")  # Add this
+
