@@ -1,8 +1,8 @@
-# app/api/webhooks.py
+﻿# app/api/webhooks.py
 from fastapi import APIRouter, Depends, HTTPException, status, Header, Request, BackgroundTasks
 from fastapi.responses import JSONResponse
 from sqlalchemy.orm import Session
-from typing import Optional, Dict, Any
+from typing import Optional, Dict, Any, List
 import json
 import uuid
 from datetime import datetime, timezone
@@ -10,14 +10,14 @@ from datetime import datetime, timezone
 from app.database import get_db
 from app.models.project import Project
 from app.models.build import Build
-from app.models.webhook import WebhookEvent
+from app.models.webhook import WebhookEvent as WebhookEventModel
 from app.schemas.webhook import (
-    WebhookEventCreate, 
-    WebhookEvent, 
     WebhookConfig,
     WebhookTestRequest,
     GitHubWebhookPayload
 )
+# IMPORTANT: Don't import WebhookEvent from schemas here - it causes circular import
+# We'll import it locally in the function that needs it
 from app.services.webhook_parser import WebhookVerifier, GitHubWebhookParser
 from app.api.auth import get_current_user
 from app.models.user import User
@@ -35,37 +35,27 @@ async def github_webhook(
 ):
     """
     GitHub webhook receiver endpoint
-    
-    GitHub will send webhooks to this endpoint when events occur
     """
     try:
-        # Read raw body for signature verification
         body_bytes = await request.body()
         body_json = await request.json()
         
-        # Log webhook receipt (for debugging)
-        print(f"GitHub Webhook Received: {x_github_event}")
-        print(f"Delivery ID: {x_github_delivery}")
-        
-        # Store webhook event
         headers_dict = dict(request.headers)
         
-        # Create webhook event record
-        webhook_event = WebhookEvent(
+        webhook_event = WebhookEventModel(
             event_type=x_github_event or "unknown",
             delivery_id=x_github_delivery or str(uuid.uuid4()),
             signature=x_hub_signature_256,
             status="received",
             payload=body_json,
             headers=headers_dict,
-            project_id=None,  # Will be determined in background task
+            project_id=None,
         )
         
         db.add(webhook_event)
         db.commit()
         db.refresh(webhook_event)
         
-        # Process in background
         background_tasks.add_task(
             process_github_webhook,
             webhook_event.id,
@@ -102,7 +92,6 @@ async def test_webhook(
     """
     Test webhook endpoint - simulates a GitHub webhook
     """
-    # Get a project for testing
     project = db.query(Project).filter(
         Project.owner_id == current_user.id
     ).first()
@@ -113,7 +102,6 @@ async def test_webhook(
             detail="No projects found for testing"
         )
     
-    # Create test payload based on event type
     test_payload = test_request.payload or {
         "action": "test",
         "repository": {
@@ -126,8 +114,7 @@ async def test_webhook(
         "zen": "Keep it logically awesome.",
     }
     
-    # Simulate webhook processing
-    webhook_event = WebhookEvent(
+    webhook_event = WebhookEventModel(
         event_type=test_request.event_type.value,
         delivery_id=str(uuid.uuid4()),
         status="received",
@@ -138,8 +125,8 @@ async def test_webhook(
     
     db.add(webhook_event)
     db.commit()
+    db.refresh(webhook_event)
     
-    # Process immediately for testing
     process_test_webhook(webhook_event.id, db)
     
     return {
@@ -149,11 +136,10 @@ async def test_webhook(
         "project_id": project.id,
     }
 
-# In app/api/webhooks.py, change the get_webhook_config function:
 @router.get("/config/{project_id}", response_model=WebhookConfig)
 async def get_webhook_config(
     project_id: int,
-    request: Request,  # Add this parameter
+    request: Request,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
@@ -171,12 +157,10 @@ async def get_webhook_config(
             detail="Project not found"
         )
     
-    # Generate webhook URL if not exists
     if not project.webhook_url:
         project.webhook_url = f"{request.base_url}webhooks/github"
         db.commit()
     
-    # Generate secret if not exists
     if not project.webhook_secret:
         import secrets
         project.webhook_secret = secrets.token_hex(32)
@@ -188,7 +172,7 @@ async def get_webhook_config(
         events=["push", "workflow_run", "check_run"]
     )
 
-@router.get("/events/{project_id}", response_model=list[WebhookEvent])
+@router.get("/events/{project_id}", response_model=List[dict])  # Use dict instead of WebhookEvent
 async def get_webhook_events(
     project_id: int,
     db: Session = Depends(get_db),
@@ -210,13 +194,26 @@ async def get_webhook_events(
             detail="Project not found"
         )
     
-    events = db.query(WebhookEvent).filter(
-        WebhookEvent.project_id == project_id
+    events = db.query(WebhookEventModel).filter(
+        WebhookEventModel.project_id == project_id
     ).order_by(
-        WebhookEvent.received_at.desc()
+        WebhookEventModel.received_at.desc()
     ).offset(skip).limit(limit).all()
     
-    return events
+    # Convert to dict to avoid Pydantic issues
+    return [
+        {
+            "id": event.id,
+            "event_type": event.event_type,
+            "action": event.action,
+            "delivery_id": event.delivery_id,
+            "status": event.status,
+            "project_id": event.project_id,
+            "received_at": event.received_at,
+            "processed_at": event.processed_at,
+        }
+        for event in events
+    ]
 
 # Background task functions
 async def process_github_webhook(
@@ -226,16 +223,12 @@ async def process_github_webhook(
     event_type: Optional[str],
     delivery_id: Optional[str],
 ):
-    """
-    Background task to process GitHub webhook
-    """
     from app.database import SessionLocal
     db = SessionLocal()
     
     try:
-        # Get webhook event
-        webhook_event = db.query(WebhookEvent).filter(
-            WebhookEvent.id == event_id
+        webhook_event = db.query(WebhookEventModel).filter(
+            WebhookEventModel.id == event_id
         ).first()
         
         if not webhook_event:
@@ -244,20 +237,17 @@ async def process_github_webhook(
         webhook_event.status = "processing"
         db.commit()
         
-        # Parse payload
         payload = webhook_event.payload
         parsed_data = GitHubWebhookParser.parse_event(
             webhook_event.headers,
             payload
         )
         
-        # Try to find matching project
         project = find_project_from_webhook(db, payload)
         
         if project:
             webhook_event.project_id = project.id
             
-            # Verify signature if project has secret
             if project.webhook_secret and signature:
                 is_valid = WebhookVerifier.verify_github_signature(
                     raw_body,
@@ -270,7 +260,6 @@ async def process_github_webhook(
                     db.commit()
                     return
             
-            # Process based on event type
             if event_type == "workflow_run":
                 process_workflow_run_event(db, project, payload)
             elif event_type == "check_run":
@@ -292,9 +281,8 @@ async def process_github_webhook(
             db.close()
 
 def process_test_webhook(event_id: int, db: Session):
-    """Process test webhook"""
-    webhook_event = db.query(WebhookEvent).filter(
-        WebhookEvent.id == event_id
+    webhook_event = db.query(WebhookEventModel).filter(
+        WebhookEventModel.id == event_id
     ).first()
     
     if webhook_event:
@@ -303,12 +291,10 @@ def process_test_webhook(event_id: int, db: Session):
         db.commit()
 
 def find_project_from_webhook(db: Session, payload: Dict[str, Any]) -> Optional[Project]:
-    """Find project matching webhook repository"""
     repo_url = payload.get("repository", {}).get("html_url")
     if not repo_url:
         return None
     
-    # Try to match by repository URL
     project = db.query(Project).filter(
         Project.repository_url.ilike(f"%{repo_url}%")
     ).first()
@@ -316,14 +302,11 @@ def find_project_from_webhook(db: Session, payload: Dict[str, Any]) -> Optional[
     return project
 
 def process_workflow_run_event(db: Session, project: Project, payload: Dict[str, Any]):
-    """Process GitHub workflow_run event"""
     workflow_run = payload.get("workflow_run", {})
     conclusion = workflow_run.get("conclusion")
-    status = workflow_run.get("status")
     head_sha = workflow_run.get("head_sha")
     
     if conclusion in ["success", "failure", "cancelled"]:
-        # Find or create build for this commit
         build = db.query(Build).filter(
             Build.project_id == project.id,
             Build.commit_hash == head_sha
@@ -335,7 +318,6 @@ def process_workflow_run_event(db: Session, project: Project, payload: Dict[str,
             db.commit()
 
 def process_check_run_event(db: Session, project: Project, payload: Dict[str, Any]):
-    """Process GitHub check_run event"""
     check_run = payload.get("check_run", {})
     conclusion = check_run.get("conclusion")
     head_sha = check_run.get("head_sha")
@@ -351,13 +333,10 @@ def process_check_run_event(db: Session, project: Project, payload: Dict[str, An
             db.commit()
 
 def process_push_event(db: Session, project: Project, payload: Dict[str, Any]):
-    """Process GitHub push event"""
-    # Could trigger a new build on push
     head_commit = payload.get("head_commit", {})
     commit_hash = head_commit.get("id")
     commit_message = head_commit.get("message")
     
     if commit_hash and project.status == "active":
-        # Create a new build for this push
         from app.services.build_runner import trigger_build
         trigger_build(db, project.id, commit_hash, commit_message)
