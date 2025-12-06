@@ -1,6 +1,8 @@
 ﻿from pydantic import BaseModel
 from datetime import datetime
 from typing import Optional, Dict, Any, List
+from pydantic import Field
+
 from enum import Enum
 
 class WebhookEventType(str, Enum):
@@ -61,6 +63,22 @@ class GitHubWebhookPayload(BaseModel):
     class Config:
         extra = "allow"
 
+
+
 class WebhookTestRequest(BaseModel):
-    event_type: WebhookEventType = WebhookEventType.PING
-    payload: Optional[Dict[str, Any]] = None
+    event_type: WebhookEventType = Field(
+        default=WebhookEventType.PING,
+        description="Type of webhook event to simulate"
+    )
+    payload: Optional[Dict[str, Any]] = Field(
+        default=None,
+        description="Optional payload data for the webhook",
+        example={
+            "zen": "Keep it logically awesome.",
+            "hook_id": 123456,
+            "repository": {
+                "name": "test-repo",
+                "html_url": "https://github.com/test/test-repo"
+            }
+        }
+    )
