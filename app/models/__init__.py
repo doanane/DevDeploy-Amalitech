@@ -1,6 +1,17 @@
-﻿from app.models.user import User
-from app.models.project import Project
-from app.models.build import Build
-from app.models.webhook import WebhookEvent  # Make sure this is here
+﻿# app/models/__init__.py
+from .user import User
+from .project import Project
+from .build import Build
+from .webhook import WebhookEvent
+from .notification import Notification
+from .build_log import BuildLog
 
-__all__ = ["User", "Project", "Build", "WebhookEvent"]
+# Make sure all models are registered
+__all__ = [
+    "User", 
+    "Project", 
+    "Build", 
+    "WebhookEvent", 
+    "Notification",
+    "BuildLog"
+]
