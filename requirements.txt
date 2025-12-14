@@ -14,3 +14,9 @@ email-validator==2.1.0
 redis==4.6.0
 # Remove alembic if causing issues
 # alembic==1.13.1
+
+pytest==7.4.4
+pytest-asyncio==0.21.1
+pytest-cov==4.1.0
+httpx==0.25.2
+sqlalchemy-utils==0.41.1
