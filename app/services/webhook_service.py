@@ -5,6 +5,7 @@ import hmac
 import hashlib
 import json
 import logging
+from app.services.build_service_simple import BuildServiceSimple as BuildService
 from datetime import datetime, timedelta
 from typing import Dict, Any, Optional, Tuple
 from sqlalchemy.orm import Session
@@ -12,7 +13,7 @@ from sqlalchemy import and_, or_
 import secrets
 from typing import Dict, Any, Optional, Tuple, List
 from app.models import Project, Build, WebhookEvent
-from app.services.build_service import BuildService
+# from app.services.build_service import BuildService
 from app.core.security import generate_signature
 from app.models.build_log import BuildLog 
 

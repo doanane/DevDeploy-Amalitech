@@ -9,9 +9,9 @@ from app.schemas.build import BuildCreate, Build as BuildSchema, BuildSummary
 from app.api.auth import get_current_user
 from app.services.build_runner import simulate_build, trigger_build
 
-router = APIRouter(prefix="", tags=["builds"])
+router = APIRouter(prefix="/builds", tags=["builds"])
 
-@router.post("/projects/{project_id}/builds", response_model=BuildSchema, operation_id="trigger_build")
+@router.post("/projects/{project_id}/builds", response_model=BuildSchema)
 def create_build(
     project_id: int,
     build_data: BuildCreate,
@@ -50,7 +50,7 @@ def create_build(
     
     return new_build
 
-@router.get("/projects/{project_id}/builds", response_model=List[BuildSummary], operation_id="list_project_builds")
+@router.get("/projects/{project_id}/builds", response_model=List[BuildSummary])
 def get_project_builds(
     project_id: int,
     db: Session = Depends(get_db),
@@ -80,7 +80,7 @@ def get_project_builds(
     
     return builds
 
-@router.get("/builds/{build_id}", response_model=BuildSchema, operation_id="get_build")  # Added /builds prefix
+@router.get("/{build_id}", response_model=BuildSchema)
 def get_build(
     build_id: int,
     db: Session = Depends(get_db),
@@ -102,7 +102,7 @@ def get_build(
     
     return build
 
-@router.get("/builds/{build_id}/logs", operation_id="get_build_logs")  # Added /builds prefix
+@router.get("/{build_id}/logs")
 def get_build_logs(
     build_id: int,
     db: Session = Depends(get_db),

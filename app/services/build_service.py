@@ -93,12 +93,6 @@ class BuildService:
     def start_build(self, build_id: int) -> Build:
         """
         Start a build execution.
-        
-        Args:
-            build_id: Build ID
-            
-        Returns:
-            Build: Updated build instance
         """
         build = self.db.query(Build).get(build_id)
         if not build:
@@ -140,15 +134,6 @@ class BuildService:
     ) -> Build:
         """
         Complete a build.
-        
-        Args:
-            build_id: Build ID
-            status: Final build status
-            logs: Build logs/output
-            error_message: Error message if failed
-            
-        Returns:
-            Build: Completed build instance
         """
         build = self.db.query(Build).get(build_id)
         if not build:
@@ -199,12 +184,6 @@ class BuildService:
     def get_build_with_logs(self, build_id: int) -> Optional[Build]:
         """
         Get a build with its logs.
-        
-        Args:
-            build_id: Build ID
-            
-        Returns:
-            Optional[Build]: Build with logs if found
         """
         return self.db.query(Build).options(
             joinedload(Build.logs)
@@ -219,15 +198,6 @@ class BuildService:
     ) -> List[Build]:
         """
         Get builds for a project with filtering and pagination.
-        
-        Args:
-            project_id: Project ID
-            status: Filter by status
-            limit: Maximum number of builds
-            offset: Number of builds to skip
-            
-        Returns:
-            List[Build]: List of builds
         """
         query = self.db.query(Build).filter(Build.project_id == project_id)
         
@@ -241,12 +211,6 @@ class BuildService:
     def cancel_build(self, build_id: int) -> Build:
         """
         Cancel a pending or running build.
-        
-        Args:
-            build_id: Build ID
-            
-        Returns:
-            Build: Cancelled build instance
         """
         build = self.db.query(Build).get(build_id)
         if not build:
@@ -281,12 +245,9 @@ class BuildService:
     def get_build_queue_status(self) -> Dict[str, Any]:
         """
         Get current build queue status.
-        
-        Returns:
-            Dict with queue information
         """
         # Get pending builds from queue
-        queue_builds = self.redis.lrange("build_queue", 0, -1)
+        queue_builds = redis_client.get_cache("build_queue") or []
         pending_count = len(queue_builds)
         
         # Get running builds
@@ -303,18 +264,12 @@ class BuildService:
             "running": running_count,
             "max_concurrent": max_concurrent,
             "available_slots": max(0, max_concurrent - running_count),
-            "queue_position": queue_builds[:10]  # First 10 in queue
+            "queue_position": queue_builds[:10] if queue_builds else []
         }
     
     def _generate_build_number(self, project_id: int) -> str:
         """
         Generate a unique build number for a project.
-        
-        Args:
-            project_id: Project ID
-            
-        Returns:
-            str: Build number in format PRJ-001
         """
         # Get project abbreviation
         project = self.db.query(Project).get(project_id)
@@ -338,34 +293,15 @@ class BuildService:
         return f"{project_abbr}-{next_num:03d}"
     
     def _queue_build(self, build_id: int):
-    """Add build to processing queue (in-memory if Redis not available)."""
-    if redis_client.is_connected():
-        redis_client.set_cache(f"build_queue_{build_id}", build_id, ttl=3600)
-    else:
-        logger.warning("Redis not available, using in-memory queue")
-
-    def get_build_queue_status(self) -> Dict[str, Any]:
-            """
-            Get current build queue status.
-            """
-            if redis_client.is_connected():
-                # Get from Redis
-                # This is simplified - in real app you'd use Redis lists
-                return {
-                    "pending": 0,
-                    "running": 0,
-                    "max_concurrent": 3,
-                    "queue_available": True
-                }
-            else:
-                # In-memory fallback
-                return {
-                    "pending": 0,
-                    "running": 0,
-                    "max_concurrent": 3,
-                    "queue_available": False,
-                    "message": "Using in-memory queue"
-                }
+        """Add build to processing queue."""
+        if redis_client.is_connected():
+            # Get current queue
+            queue = redis_client.get_cache("build_queue") or []
+            queue.append(build_id)
+            redis_client.set_cache("build_queue", queue, ttl=3600)
+        else:
+            logger.warning("Redis not available, using in-memory queue")
+            # In-memory queue logic here
     
     def _add_build_log(
         self,
@@ -375,6 +311,8 @@ class BuildService:
         level: str = "info"
     ):
         """Add a log entry to a build."""
+        from app.models.build_log import BuildLog
+        
         log = BuildLog(
             build_id=build_id,
             stage=stage,
@@ -397,5 +335,6 @@ class BuildService:
     
     def _send_build_notifications(self, build: Build):
         """Send notifications for build completion."""
-
+        # This would integrate with your notification service
+        # For now, just log it
         logger.info(f"Would send notifications for build {build.id} status {build.status}")
