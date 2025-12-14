@@ -30,6 +30,36 @@ from app.core.security import verify_signature
 router = APIRouter(prefix="/webhooks", tags=["webhooks"])
 logger = logging.getLogger(__name__)
 
+# At the top of app/api/webhooks.py, add this:
+try:
+    from app.services.webhook_service import WebhookService
+    webhook_service_available = True
+except ImportError as e:
+    logger.error(f"Failed to import WebhookService: {e}")
+    webhook_service_available = False
+except Exception as e:
+    logger.error(f"Error importing WebhookService: {e}")
+    webhook_service_available = False
+
+# Then modify the endpoints that use WebhookService:
+@router.post("/github", status_code=status.HTTP_202_ACCEPTED)
+async def github_webhook(
+    request: Request,
+    background_tasks: BackgroundTasks,
+    x_hub_signature_256: Optional[str] = Header(None, alias="X-Hub-Signature-256"),
+    x_github_event: Optional[str] = Header(None, alias="X-GitHub-Event"),
+    x_github_delivery: Optional[str] = Header(None, alias="X-GitHub-Delivery"),
+    user_agent: Optional[str] = Header(None, alias="User-Agent"),
+    db: Session = Depends(get_db)
+):
+    """Receive GitHub webhooks."""
+    if not webhook_service_available:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Webhook service not available"
+        )
+    
+    
 @router.post("/github", status_code=status.HTTP_202_ACCEPTED)
 async def github_webhook(
     request: Request,

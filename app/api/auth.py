@@ -1,5 +1,6 @@
+# app/api/auth.py - FIXED for HTTPBearer only
 from fastapi import APIRouter, Depends, HTTPException, status
-from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
+from fastapi.security import HTTPBearer
 from sqlalchemy.orm import Session
 from sqlalchemy import select
 from datetime import datetime, timedelta
@@ -16,8 +17,63 @@ from app.core.security import (
     verify_token
 )
 
-router = APIRouter()
-oauth2_scheme = OAuth2PasswordBearer(tokenUrl="auth/login")
+router = APIRouter(prefix="/auth", tags=["authentication"])
+
+# Use HTTPBearer instead of OAuth2PasswordBearer
+security = HTTPBearer(auto_error=False)
+
+async def get_current_user(
+    credentials: Optional[HTTPBearer] = Depends(security),
+    db: Session = Depends(get_db)
+):
+    """Get current user from JWT token."""
+    if not credentials:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Not authenticated",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+    
+    token = credentials.credentials
+    
+    try:
+        payload = verify_token(token)
+        if not payload:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Invalid token"
+            )
+        
+        email = payload.get("sub")
+        if not email:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Invalid token"
+            )
+        
+        stmt = select(User).where(User.email == email)
+        result = db.execute(stmt)
+        user = result.scalar_one_or_none()
+        
+        if not user:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="User not found"
+            )
+        
+        if not user.is_active:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Inactive user"
+            )
+        
+        return user
+        
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail=f"Invalid token: {str(e)}"
+        )
 
 @router.post("/register", response_model=UserResponse)
 async def register(
@@ -54,8 +110,7 @@ async def register(
             email=user_data.email,
             username=user_data.username,
             hashed_password=hashed_password,
-            is_active=True,
-            is_admin=False
+            is_active=True
         )
         
         db.add(user)
@@ -66,8 +121,7 @@ async def register(
             id=user.id,
             email=user.email,
             username=user.username,
-            is_active=user.is_active,
-            is_admin=user.is_admin
+            is_active=user.is_active
         )
         
     except HTTPException:
@@ -80,23 +134,22 @@ async def register(
         )
 
 @router.post("/login", response_model=Token)
-async def login(
-    form_data: OAuth2PasswordRequestForm = Depends(),
+async def login_for_access_token(
+    username: str,
+    password: str,
     db: Session = Depends(get_db)
 ):
     """
     Login user and return tokens.
-    
-    Note: The 'username' field in OAuth2PasswordRequestForm 
-          actually expects the user's email address.
+    This endpoint uses query parameters for simple HTTPBearer auth.
     """
     try:
-        # Use email as username (form_data.username contains the email)
-        stmt = select(User).where(User.email == form_data.username)
+        # Find user by email (username field contains email)
+        stmt = select(User).where(User.email == username)
         result = db.execute(stmt)
         user = result.scalar_one_or_none()
         
-        if not user or not verify_password(form_data.password, user.hashed_password):
+        if not user or not verify_password(password, user.hashed_password):
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED,
                 detail="Incorrect email or password",
@@ -176,48 +229,16 @@ async def refresh_token(
         )
 
 @router.get("/me", response_model=UserResponse)
-async def get_current_user(
-    token: str = Depends(oauth2_scheme),
-    db: Session = Depends(get_db)
+async def get_current_user_endpoint(
+    current_user: User = Depends(get_current_user)
 ):
     """Get current user information."""
-    try:
-        payload = verify_token(token)
-        if not payload:
-            raise HTTPException(
-                status_code=status.HTTP_401_UNAUTHORIZED,
-                detail="Invalid token"
-            )
-        
-        email = payload.get("sub")
-        if not email:
-            raise HTTPException(
-                status_code=status.HTTP_401_UNAUTHORIZED,
-                detail="Invalid token"
-            )
-        
-        stmt = select(User).where(User.email == email)
-        result = db.execute(stmt)
-        user = result.scalar_one_or_none()
-        
-        if not user:
-            raise HTTPException(
-                status_code=status.HTTP_401_UNAUTHORIZED,
-                detail="User not found"
-            )
-        
-        return UserResponse(
-            id=user.id,
-            email=user.email,
-            username=user.username,
-            is_active=user.is_active,
-            is_admin=user.is_admin
-        )
-        
-    except HTTPException:
-        raise
-    except Exception as e:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail=f"Invalid token: {str(e)}"
-        )
+    return UserResponse(
+        id=current_user.id,
+        email=current_user.email,
+        username=current_user.username,
+        is_active=current_user.is_active
+    )
+
+# Export get_current_user for use in other modules
+__all__ = ["router", "get_current_user", "security"]

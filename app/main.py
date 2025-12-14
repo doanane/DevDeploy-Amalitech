@@ -15,16 +15,15 @@ def wait_for_database(max_retries=30, delay_seconds=2):
     """
     Wait for database to be ready before creating tables
     """
-    from app.database import engine
-    from sqlalchemy import text  # Make sure this is imported
+    from app.database import engine  # Import here to avoid circular imports
     
     logger.info("Waiting for database to be ready...")
     
     for attempt in range(max_retries):
         try:
-            # Try to connect to database - FIXED: Use text() function
+            # Try to connect to database
             with engine.connect() as conn:
-                conn.execute(text("SELECT 1"))  # FIXED
+                conn.execute(text("SELECT 1"))
             logger.info("Database connection successful!")
             return True
         except Exception as e:
@@ -33,7 +32,7 @@ def wait_for_database(max_retries=30, delay_seconds=2):
                 time.sleep(delay_seconds)
             else:
                 logger.error(f"Could not connect to database after {max_retries} attempts: {e}")
-                return False
+                raise
     
     return False
 
@@ -59,7 +58,6 @@ app.add_middleware(
 async def startup_event():
     """Initialize database on startup."""
     logger.info("Starting application initialization...")
-    
     
     try:
         # Import database and models inside startup to avoid circular imports
@@ -98,19 +96,11 @@ app.include_router(builds.router, tags=["builds"])
 app.include_router(monitoring.router, tags=["monitoring"])
 app.include_router(notifications.router, tags=["notifications"])
 
-
-# In your main.py, make sure webhooks are imported:
-try:
-    from app.api import webhooks
-    app.include_router(webhooks.router, tags=["webhooks"])
-    webhooks_available = True
-except ImportError as e:
-    logger.warning(f"Could not import webhooks module: {e}")
-    webhooks_available = False
-
-
 @app.get("/")
 def read_root():
+    """
+    Root endpoint - API welcome and health check
+    """
     return {
         "message": "Welcome to DevDeploy API",
         "status": "running",
@@ -119,7 +109,7 @@ def read_root():
             "authentication": True,
             "projects": True,
             "builds": True,
-            "webhooks": webhooks_available,
+            "webhooks": True,
             "monitoring": True,
             "notifications": True
         },

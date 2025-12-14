@@ -1,18 +1,25 @@
-# app/services/build_runner.py - Build runner service
+# app/services/build_runner.py - FIXED
 import asyncio
 import random
 import logging
 from datetime import datetime
 from typing import Optional
+from threading import Thread
 
 from app.database import SessionLocal
 from app.models import Build
 
 logger = logging.getLogger(__name__)
 
-async def start_build_process(build_id: int):
-    """Start a build process asynchronously."""
-    asyncio.create_task(simulate_build(build_id))
+def start_build_process(build_id: int):
+    """Start a build process in a separate thread."""
+    thread = Thread(target=run_build_sync, args=(build_id,))
+    thread.daemon = True
+    thread.start()
+
+def run_build_sync(build_id: int):
+    """Run build in a sync wrapper."""
+    asyncio.run(simulate_build(build_id))
 
 async def simulate_build(build_id: int):
     """Simulate a build process with realistic stages."""
@@ -28,7 +35,7 @@ async def simulate_build(build_id: int):
         build.started_at = datetime.utcnow()
         db.commit()
         
-        # Simulate build stages
+        # Simulate build stages (unchanged from your original code)
         stages = [
             {"name": "clone", "duration": 2, "success_rate": 0.99},
             {"name": "install", "duration": 5, "success_rate": 0.95},
@@ -106,8 +113,8 @@ def trigger_build(db, project_id: int, commit_hash: Optional[str] = None, commit
         db.commit()
         db.refresh(build)
         
-        # Start build in background
-        asyncio.create_task(simulate_build(build.id))
+        # Start build in background using thread
+        start_build_process(build.id)
         
         return build
     except Exception as e:

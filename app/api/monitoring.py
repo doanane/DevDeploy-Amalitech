@@ -1,10 +1,11 @@
-# app/api/monitoring.py - SIMPLIFIED SYNC VERSION
+# app/api/monitoring.py - FIXED with text() import
 from fastapi import APIRouter, Depends
 from fastapi.responses import JSONResponse
 import psutil
 import logging
 from datetime import datetime
 from sqlalchemy.orm import Session
+from sqlalchemy import text  # ADD THIS IMPORT
 
 from app.database import get_db
 
@@ -20,9 +21,9 @@ def health_check(db: Session = Depends(get_db)):
         "checks": {}
     }
     
-    # Database health check
+    # Database health check - FIXED: use text()
     try:
-        db.execute("SELECT 1")
+        db.execute(text("SELECT 1"))
         health_status["checks"]["database"] = {
             "status": "healthy"
         }

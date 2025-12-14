@@ -1,3 +1,4 @@
+# app/api/builds.py - UPDATED with proper auth import
 from fastapi import APIRouter, Depends, HTTPException, status, BackgroundTasks
 from sqlalchemy.orm import Session
 from typing import List
@@ -11,6 +12,7 @@ from app.services.build_runner import simulate_build, trigger_build
 
 router = APIRouter(prefix="/builds", tags=["builds"])
 
+# In app/api/builds.py
 @router.post("/projects/{project_id}/builds", response_model=BuildSchema)
 def create_build(
     project_id: int,
@@ -39,47 +41,28 @@ def create_build(
             detail="Cannot create build for archived project"
         )
     
-    new_build = trigger_build(
-        db=db,
+    # Create the build
+    build = Build(
         project_id=project_id,
         commit_hash=build_data.commit_hash,
-        commit_message=build_data.commit_message
+        commit_message=build_data.commit_message,
+        status="pending",
+        created_at=datetime.utcnow()
     )
     
-    background_tasks.add_task(simulate_build, new_build.id)
+    db.add(build)
+    db.commit()
+    db.refresh(build)
     
-    return new_build
+    # Add to background tasks
+    background_tasks.add_task(simulate_build_sync, build.id)
+    
+    return build
 
-@router.get("/projects/{project_id}/builds", response_model=List[BuildSummary])
-def get_project_builds(
-    project_id: int,
-    db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user),
-    skip: int = 0,
-    limit: int = 50
-):
-    """
-    Get all builds for a specific project
-    """
-    project = db.query(Project).filter(
-        Project.id == project_id,
-        Project.owner_id == current_user.id
-    ).first()
+def simulate_build_sync(build_id: int):
+    """Sync wrapper for simulate_build."""
+    asyncio.run(simulate_build(build_id))
     
-    if not project:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Project not found"
-        )
-    
-    builds = db.query(Build).filter(
-        Build.project_id == project_id
-    ).order_by(
-        Build.created_at.desc()
-    ).offset(skip).limit(limit).all()
-    
-    return builds
-
 @router.get("/{build_id}", response_model=BuildSchema)
 def get_build(
     build_id: int,

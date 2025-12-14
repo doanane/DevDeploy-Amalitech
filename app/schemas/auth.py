@@ -1,6 +1,6 @@
+# app/schemas/auth.py - FIXED
 from pydantic import BaseModel, EmailStr, field_validator
 from typing import Optional
-from fastapi import Form
 
 class UserBase(BaseModel):
     email: EmailStr
@@ -19,7 +19,6 @@ class UserCreate(UserBase):
 class UserResponse(UserBase):
     id: int
     is_active: bool
-    is_admin: bool = False
     
     class Config:
         from_attributes = True
@@ -31,21 +30,3 @@ class Token(BaseModel):
 
 class TokenData(BaseModel):
     email: Optional[str] = None
-
-# Custom login form that shows "email" instead of "username"
-class LoginForm:
-    def __init__(
-        self,
-        email: str = Form(..., description="User email address"),
-        password: str = Form(..., description="User password"),
-        grant_type: Optional[str] = Form(None, pattern="password"),
-        scope: str = Form(""),
-        client_id: Optional[str] = Form(None),
-        client_secret: Optional[str] = Form(None),
-    ):
-        self.username = email  # Map email to username for OAuth2 compatibility
-        self.password = password
-        self.grant_type = grant_type
-        self.scope = scope
-        self.client_id = client_id
-        self.client_secret = client_secret
