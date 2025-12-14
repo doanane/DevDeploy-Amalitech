@@ -1,44 +1,29 @@
-# app/database.py
 from sqlalchemy import create_engine
-from sqlalchemy.ext.declarative import declarative_base
-from sqlalchemy.orm import sessionmaker
+from sqlalchemy.orm import sessionmaker, declarative_base
 import os
-from dotenv import load_dotenv
 
-# Load environment variables
-load_dotenv()
+# FORCE psycopg2 - NO asyncpg!
+DATABASE_URL = os.getenv(
+    'DATABASE_URL',
+    'postgresql+psycopg2://postgres:postgres@localhost:5432/devdeploy'
+)
 
-def get_database_url():
-    """
-    Smart database URL detection:
-    - Check DATABASE_URL from .env first
-    - If not found, build URL based on environment
-    """
-    # First, try to get DATABASE_URL from .env
-    env_url = os.getenv("DATABASE_URL")
-    if env_url:
-        return env_url
-    
-    # If no DATABASE_URL, build it based on environment
-    in_docker = os.path.exists("/.dockerenv")
-    
-    if in_docker:
-        # Docker environment
-        host = "db"
-        password = "password123"  # Docker password
-    else:
-        # Local development
-        host = "localhost"
-        password = "S%400570263170s"  # Your encoded password
-    
-    # Build URL
-    return f"postgresql+psycopg2://postgres:{password}@{host}:5432/DevDeploy"
+print(f'Using database URL: {DATABASE_URL}')
 
-DATABASE_URL = get_database_url()
-print(f"🔗 Database URL: {DATABASE_URL}")  # Debug logging
+if 'asyncpg' in DATABASE_URL:
+    raise ValueError('ERROR: Must use psycopg2, not asyncpg!')
 
-engine = create_engine(DATABASE_URL, echo=True)
+# Create engine
+engine = create_engine(
+    DATABASE_URL,
+    echo=True,
+    pool_pre_ping=True
+)
+
+# Create session
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
+
+# Create base
 Base = declarative_base()
 
 def get_db():

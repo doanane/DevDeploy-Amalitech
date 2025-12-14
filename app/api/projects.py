@@ -1,3 +1,4 @@
+# app/api/projects.py - UPDATED with proper auth import
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.orm import Session
 from typing import List

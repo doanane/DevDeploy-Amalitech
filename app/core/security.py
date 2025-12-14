@@ -1,4 +1,4 @@
-# app/core/security.py - Simple version for development
+# app/core/security.py - Clean version without emojis
 from datetime import datetime, timedelta
 from typing import Optional
 from jose import JWTError, jwt
@@ -10,40 +10,40 @@ SECRET_KEY = os.getenv("SECRET_KEY", "dev-secret-key-change-in-production")
 ALGORITHM = "HS256"
 ACCESS_TOKEN_EXPIRE_MINUTES = 30
 
-# Simple password hashing for development (NOT for production!)
 def verify_password(plain_password: str, hashed_password: str) -> bool:
-    """Simple password verification for development."""
-    # In development, we can use simple comparison
-    # WARNING: This is INSECURE for production!
+    """
+    Verify password using bcrypt if available, otherwise use simple hashing.
+    """
     if os.getenv("ENVIRONMENT") == "development":
-        # For development only - compare directly
-        return plain_password == hashed_password
-    else:
-        # Try bcrypt, fallback to sha256
         try:
-            from passlib.context import CryptContext
-            pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
-            return pwd_context.verify(plain_password, hashed_password)
-        except:
-            # Fallback to sha256
-            test_hash = hashlib.sha256(plain_password.encode()).hexdigest()
-            return test_hash == hashed_password
+            import bcrypt
+            if hashed_password.startswith("$2b$"):
+                return bcrypt.checkpw(
+                    plain_password.encode('utf-8'),
+                    hashed_password.encode('utf-8')
+                )
+            return get_password_hash(plain_password) == hashed_password
+        except ImportError:
+            return get_password_hash(plain_password) == hashed_password
+    else:
+        import bcrypt
+        try:
+            return bcrypt.checkpw(
+                plain_password.encode('utf-8'),
+                hashed_password.encode('utf-8')
+            )
+        except ValueError:
+            return get_password_hash(plain_password) == hashed_password
 
 def get_password_hash(password: str) -> str:
-    """Simple password hashing for development."""
-    # WARNING: This is INSECURE for production!
-    if os.getenv("ENVIRONMENT") == "development":
-        # For development only - no hashing
-        return password
-    else:
-        # Try bcrypt, fallback to sha256
-        try:
-            from passlib.context import CryptContext
-            pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
-            return pwd_context.hash(password)
-        except:
-            # Fallback to sha256
-            return hashlib.sha256(password.encode()).hexdigest()
+    """Hash password using bcrypt if available, otherwise SHA256."""
+    try:
+        import bcrypt
+        salt = bcrypt.gensalt()
+        hashed = bcrypt.hashpw(password.encode('utf-8'), salt)
+        return hashed.decode('utf-8')
+    except ImportError:
+        return hashlib.sha256(password.encode()).hexdigest()
 
 def create_access_token(data: dict, expires_delta: Optional[timedelta] = None):
     """Create an access token."""

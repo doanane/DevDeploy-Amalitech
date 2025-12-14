@@ -1,266 +1,333 @@
-﻿# app/api/webhooks.py - PRODUCTION READY VERSION
-from fastapi import APIRouter, Depends, HTTPException, status, Header, Request, BackgroundTasks
+# app/api/webhooks.py - Clean version
+import hmac
+import hashlib
+import json
+import logging
+from datetime import datetime
+from typing import Optional, Dict, Any, List
+
+from fastapi import (
+    APIRouter, 
+    Depends, 
+    HTTPException, 
+    Request, 
+    Header, 
+    BackgroundTasks,
+    status
+)
 from fastapi.responses import JSONResponse
 from sqlalchemy.orm import Session
-from typing import Optional, Dict, Any, List
-import json
-import uuid
-from datetime import datetime, timezone
 
 from app.database import get_db
 from app.models.project import Project
-from app.models.build import Build
-from app.models.webhook import WebhookEvent as WebhookEventModel
-from app.schemas.webhook import (
-    WebhookConfig,
-    WebhookTestRequest,
-    GitHubWebhookPayload
-)
-from app.services.webhook_parser import WebhookVerifier, GitHubWebhookParser
-from app.api.auth import get_current_user
+from app.models.webhook import WebhookEvent
 from app.models.user import User
+from app.schemas.webhook import WebhookConfig, WebhookTestRequest, WebhookEventResponse
+from app.api.auth import get_current_user
+from app.services.webhook_service import WebhookService
+from app.core.security import verify_signature
 
 router = APIRouter(prefix="/webhooks", tags=["webhooks"])
+logger = logging.getLogger(__name__)
 
-# ========== REAL GITHUB WEBHOOK ENDPOINT (PRODUCTION) ==========
-@router.post("/github", status_code=202)
+# At the top of app/api/webhooks.py, add this:
+try:
+    from app.services.webhook_service import WebhookService
+    webhook_service_available = True
+except ImportError as e:
+    logger.error(f"Failed to import WebhookService: {e}")
+    webhook_service_available = False
+except Exception as e:
+    logger.error(f"Error importing WebhookService: {e}")
+    webhook_service_available = False
+
+# Then modify the endpoints that use WebhookService:
+@router.post("/github", status_code=status.HTTP_202_ACCEPTED)
 async def github_webhook(
     request: Request,
     background_tasks: BackgroundTasks,
-    db: Session = Depends(get_db),
+    x_hub_signature_256: Optional[str] = Header(None, alias="X-Hub-Signature-256"),
+    x_github_event: Optional[str] = Header(None, alias="X-GitHub-Event"),
+    x_github_delivery: Optional[str] = Header(None, alias="X-GitHub-Delivery"),
+    user_agent: Optional[str] = Header(None, alias="User-Agent"),
+    db: Session = Depends(get_db)
+):
+    """Receive GitHub webhooks."""
+    if not webhook_service_available:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Webhook service not available"
+        )
+    
+    
+@router.post("/github", status_code=status.HTTP_202_ACCEPTED)
+async def github_webhook(
+    request: Request,
+    background_tasks: BackgroundTasks,
+    x_hub_signature_256: Optional[str] = Header(None, alias="X-Hub-Signature-256"),
+    x_github_event: Optional[str] = Header(None, alias="X-GitHub-Event"),
+    x_github_delivery: Optional[str] = Header(None, alias="X-GitHub-Delivery"),
+    user_agent: Optional[str] = Header(None, alias="User-Agent"),
+    db: Session = Depends(get_db)
 ):
     """
-    GitHub Webhook Receiver - Production Endpoint
-    
-    Receives GitHub webhooks with these standard headers:
-    - X-GitHub-Event: Type of event (push, ping, workflow_run, etc.)
-    - X-GitHub-Delivery: Unique delivery ID
-    - X-Hub-Signature-256: HMAC signature for security (optional in testing)
-    
-    This endpoint accepts ANY JSON payload from GitHub.
+    Receive GitHub webhooks with signature verification and async processing.
     """
+    # Read raw body for signature verification
+    raw_body = await request.body()
+    
+    # Get client IP for logging
+    client_ip = request.client.host if request.client else "unknown"
+    
+    logger.info(
+        "GitHub webhook received from %s - Event: %s, Delivery: %s",
+        client_ip, x_github_event, x_github_delivery
+    )
+    
     try:
-        # Read raw body for signature verification
-        raw_body = await request.body()
-        
-        # Try to parse JSON (allow empty)
+        # Parse JSON payload
         try:
-            if raw_body:
-                body_json = json.loads(raw_body)
-            else:
-                body_json = {}
-        except json.JSONDecodeError:
-            # If invalid JSON, still accept it but log
-            body_json = {"raw_body": raw_body.decode('utf-8', errors='ignore')}
+            payload = json.loads(raw_body.decode('utf-8'))
+        except json.JSONDecodeError as e:
+            logger.error("Invalid JSON payload: %s", e)
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Invalid JSON payload"
+            )
         
-        # Get GitHub headers
-        headers = dict(request.headers)
-        event_type = headers.get("X-GitHub-Event", "ping")
-        delivery_id = headers.get("X-GitHub-Delivery", str(uuid.uuid4()))
-        signature = headers.get("X-Hub-Signature-256")
+        # Get event type
+        event_type = x_github_event or "ping"
         
-        # Create webhook event
-        webhook_event = WebhookEventModel(
-            event_type=event_type,
-            delivery_id=delivery_id,
-            signature=signature,
-            status="received",
-            payload=body_json,
-            headers=headers,
-            project_id=None,
-        )
-        
-        db.add(webhook_event)
-        db.commit()
-        db.refresh(webhook_event)
-        
-        # Process in background
-        background_tasks.add_task(
-            process_github_webhook_background,
-            webhook_event.id,
-            raw_body,
-            signature,
-            event_type,
-            delivery_id,
-        )
-        
-        return {
-            "status": "accepted",
-            "message": "Webhook received and queued for processing",
-            "event_id": webhook_event.id,
-            "event_type": event_type,
-            "delivery_id": delivery_id,
-            "received_at": webhook_event.received_at.isoformat(),
+        # Store headers for logging
+        headers = {
+            "user_agent": user_agent,
+            "delivery_id": x_github_delivery,
+            "client_ip": client_ip
         }
         
-    except Exception as e:
-        # Log error but still return 202 (GitHub expects 2xx for successful receipt)
-        print(f"Error in webhook receiver: {e}")
+        # Try to find project for signature verification
+        repository = payload.get("repository", {})
+        repo_url = repository.get("html_url", "")
+        
+        project = None
+        if repo_url:
+            project = db.query(Project).filter(
+                Project.repository_url.ilike(f"%{repo_url}%"),
+                Project.webhook_enabled == True
+            ).first()
+        
+        # Verify signature if project has secret
+        if project and project.webhook_secret and x_hub_signature_256:
+            try:
+                is_valid = WebhookService.verify_github_signature(
+                    raw_body,
+                    x_hub_signature_256,
+                    project.webhook_secret
+                )
+                
+                if not is_valid:
+                    logger.warning(
+                        "Invalid signature for webhook from %s (Project: %s, IP: %s)",
+                        repo_url, project.name, client_ip
+                    )
+                    
+                    # Log failed verification attempt
+                    webhook_event = WebhookEvent(
+                        event_type=f"github.{event_type}",
+                        payload=payload,
+                        headers=headers,
+                        signature=x_hub_signature_256,
+                        delivery_id=x_github_delivery or f"failed_{hash(raw_body)}",
+                        status="failed_verification",
+                        project_id=project.id if project else None
+                    )
+                    
+                    db.add(webhook_event)
+                    db.commit()
+                    
+                    raise HTTPException(
+                        status_code=status.HTTP_401_UNAUTHORIZED,
+                        detail="Invalid webhook signature"
+                    )
+                    
+            except ValueError as e:
+                logger.error("Signature verification error: %s", e)
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail=str(e)
+                )
+        
+        # Process webhook in background
+        background_tasks.add_task(
+            process_webhook_async,
+            db,
+            payload,
+            event_type,
+            x_hub_signature_256,
+            headers,
+            project.id if project else None
+        )
+        
         return JSONResponse(
-            status_code=202,
+            status_code=status.HTTP_202_ACCEPTED,
             content={
-                "status": "accepted_with_errors",
-                "message": "Webhook received but encountered processing errors",
-                "error": str(e)
+                "status": "accepted",
+                "message": "Webhook received and queued for processing",
+                "event_type": event_type,
+                "delivery_id": x_github_delivery,
+                "timestamp": datetime.utcnow().isoformat()
             }
         )
-
-# ========== SIMPLE TEST ENDPOINT (FOR DEVELOPERS) ==========
-@router.post("/github/test", status_code=200)
-async def github_webhook_test(
-    request: Request,
-    db: Session = Depends(get_db),
-):
-    """
-    Simple Webhook Test Endpoint - For Developer Testing
-    
-    Does NOT require GitHub headers. Just send JSON.
-    
-    Example:
-    ```json
-    {
-      "event": "ping",
-      "message": "Test webhook"
-    }
-    ```
-    """
-    try:
-        # Get JSON payload
-        try:
-            body = await request.json()
-        except:
-            body = {}
         
-        event = body.get("event", "ping")
-        delivery_id = str(uuid.uuid4())
-        
-        # Create and process immediately
-        webhook = WebhookEventModel(
-            event_type=event,
-            delivery_id=delivery_id,
-            status="received",
-            payload=body,
-            headers=dict(request.headers),
-            project_id=None,
-        )
-        
-        db.add(webhook)
-        db.commit()
-        
-        # Process immediately
-        webhook.status = "processed"
-        webhook.processed_at = datetime.now(timezone.utc)
-        db.commit()
-        
-        return {
-            "status": "success",
-            "message": f"Test webhook '{event}' processed successfully",
-            "event_id": webhook.id,
-            "delivery_id": delivery_id,
-            "processed_at": webhook.processed_at.isoformat(),
-        }
-        
+    except HTTPException:
+        raise
     except Exception as e:
+        logger.error("Error processing GitHub webhook: %s", e, exc_info=True)
         raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=f"Error processing test webhook: {str(e)}"
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Internal server error"
         )
 
-# ========== EXISTING ENDPOINTS (UNCHANGED) ==========
-@router.post("/test", response_model=dict)
+@router.post("/test", response_model=Dict[str, Any])
 async def test_webhook(
     test_request: WebhookTestRequest,
+    request: Request,
     db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user),
+    current_user: User = Depends(get_current_user)
 ):
-    """Authenticated webhook test endpoint"""
+    """
+    Test webhook endpoint with validation and security.
+    """
+    # Get user's first active project
     project = db.query(Project).filter(
-        Project.owner_id == current_user.id
+        Project.owner_id == current_user.id,
+        Project.status == "active"
     ).first()
     
     if not project:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
-            detail="No projects found for testing"
+            detail="No active projects found for testing. Create a project first."
         )
     
+    # Generate test payload
     test_payload = test_request.payload or {
         "action": "test",
         "repository": {
+            "id": 123456789,
             "name": project.name,
+            "full_name": f"{current_user.username}/{project.name}",
             "html_url": project.repository_url,
+            "private": True
         },
         "sender": {
-            "login": "test_user",
+            "login": current_user.username,
+            "id": current_user.id
+        },
+        "organization": {
+            "login": "test-org"
         },
         "zen": "Keep it logically awesome.",
+        "hook_id": 123456,
+        "hook": {
+            "type": "Repository",
+            "id": 123456,
+            "active": True
+        }
     }
     
-    webhook_event = WebhookEventModel(
-        event_type=test_request.event_type.value,
-        delivery_id=str(uuid.uuid4()),
-        status="received",
-        payload=test_payload,
-        headers={"x-test-event": "true"},
-        project_id=project.id,
-    )
+    # Generate test signature
+    base_url = str(request.base_url).rstrip("/")
+    config = WebhookService.get_webhook_config(project, base_url)
+    secret = config["secret"]
     
-    db.add(webhook_event)
-    db.commit()
-    db.refresh(webhook_event)
+    # Create signature for test
+    payload_bytes = json.dumps(test_payload).encode('utf-8')
+    signature = hmac.new(
+        secret.encode('utf-8'),
+        payload_bytes,
+        hashlib.sha256
+    ).hexdigest()
     
-    process_test_webhook(webhook_event.id, db)
-    
-    return {
-        "status": "success",
-        "message": f"Test webhook {test_request.event_type.value} processed",
-        "event_id": webhook_event.id,
-        "project_id": project.id,
-    }
+    # Process test webhook
+    try:
+        webhook_event = WebhookService.process_github_webhook(
+            db=db,
+            payload=test_payload,
+            event_type=test_request.event_type.value,
+            signature=f"sha256={signature}",
+            headers={"test": "true", "user_id": str(current_user.id)}
+        )
+        
+        return {
+            "status": "success",
+            "message": f"Test webhook '{test_request.event_type.value}' processed successfully",
+            "event_id": webhook_event.id,
+            "project_id": project.id,
+            "project_name": project.name,
+            "webhook_url": f"{base_url}/webhooks/github",
+            "timestamp": datetime.utcnow().isoformat()
+        }
+        
+    except Exception as e:
+        logger.error("Test webhook failed: %s", e, exc_info=True)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Test webhook processing failed: {str(e)}"
+        )
 
 @router.get("/config/{project_id}", response_model=WebhookConfig)
 async def get_webhook_config(
     project_id: int,
     request: Request,
     db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user),
+    current_user: User = Depends(get_current_user)
 ):
-    """Get webhook configuration for a project"""
+    """
+    Get webhook configuration for secure GitHub integration.
+    """
+    # Verify project ownership and access
     project = db.query(Project).filter(
         Project.id == project_id,
-        Project.owner_id == current_user.id
+        Project.owner_id == current_user.id,
+        Project.status == "active"
     ).first()
     
     if not project:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
-            detail="Project not found"
+            detail="Project not found or access denied"
         )
     
-    if not project.webhook_url:
-        project.webhook_url = f"{request.base_url}webhooks/github"
-        db.commit()
+    # Get base URL
+    base_url = str(request.base_url).rstrip("/")
     
-    if not project.webhook_secret:
-        import secrets
-        project.webhook_secret = secrets.token_hex(32)
-        db.commit()
+    # Generate configuration
+    config = WebhookService.get_webhook_config(project, base_url)
     
     return WebhookConfig(
-        webhook_url=project.webhook_url,
-        secret=project.webhook_secret,
-        events=["push", "workflow_run", "check_run"]
+        url=config["webhook_url"],
+        secret=config["secret"],
+        events=config["events"],
+        active=True,
+        content_type=config["content_type"],
+        insecure_ssl=config["insecure_ssl"]
     )
 
-@router.get("/events/{project_id}", response_model=List[dict])
+@router.get("/events/{project_id}", response_model=Dict[str, Any])
 async def get_webhook_events(
     project_id: int,
-    db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user),
-    skip: int = 0,
     limit: int = 50,
+    offset: int = 0,
+    status: Optional[str] = None,
+    event_type: Optional[str] = None,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)
 ):
-    """Get webhook events for a project"""
+    """
+    Get webhook events with filtering, pagination, and statistics.
+    """
+    # Validate ownership
     project = db.query(Project).filter(
         Project.id == project_id,
         Project.owner_id == current_user.id
@@ -269,160 +336,177 @@ async def get_webhook_events(
     if not project:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
-            detail="Project not found"
+            detail="Project not found or access denied"
         )
     
-    events = db.query(WebhookEventModel).filter(
-        WebhookEventModel.project_id == project_id
-    ).order_by(
-        WebhookEventModel.received_at.desc()
-    ).offset(skip).limit(limit).all()
+    # Validate pagination
+    if limit < 1 or limit > 100:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Limit must be between 1 and 100"
+        )
     
-    return [
-        {
-            "id": event.id,
-            "event_type": event.event_type,
-            "action": event.action,
-            "delivery_id": event.delivery_id,
-            "status": event.status,
-            "project_id": event.project_id,
-            "received_at": event.received_at,
-            "processed_at": event.processed_at,
+    if offset < 0:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Offset must be >= 0"
+        )
+    
+    # Build query
+    query = db.query(WebhookEvent).filter(
+        WebhookEvent.project_id == project_id
+    )
+    
+    # Apply filters
+    if status:
+        query = query.filter(WebhookEvent.status == status)
+    
+    if event_type:
+        query = query.filter(WebhookEvent.event_type.ilike(f"%{event_type}%"))
+    
+    # Get total count
+    total_count = query.count()
+    
+    # Get paginated results
+    events = query.order_by(
+        WebhookEvent.created_at.desc()
+    ).offset(offset).limit(limit).all()
+    
+    # Get statistics
+    stats = db.query(
+        WebhookEvent.status,
+        db.func.count(WebhookEvent.id)
+    ).filter(
+        WebhookEvent.project_id == project_id
+    ).group_by(WebhookEvent.status).all()
+    
+    return {
+        "events": [
+            {
+                "id": event.id,
+                "event_type": event.event_type,
+                "status": event.status,
+                "created_at": event.created_at.isoformat() if event.created_at else None,
+                "processed_at": event.processed_at.isoformat() if event.processed_at else None,
+                "delivery_attempts": event.delivery_attempts,
+                "payload_summary": event.get_payload_summary(),
+                "build_id": event.build_id
+            }
+            for event in events
+        ],
+        "pagination": {
+            "total": total_count,
+            "limit": limit,
+            "offset": offset,
+            "has_more": (offset + limit) < total_count
+        },
+        "statistics": {
+            status: count for status, count in stats
         }
-        for event in events
-    ]
+    }
 
-# ========== BACKGROUND TASK FUNCTIONS ==========
-async def process_github_webhook_background(
-    event_id: int,
-    raw_body: bytes,
-    signature: Optional[str],
-    event_type: str,
-    delivery_id: str,
+@router.post("/{webhook_id}/retry", status_code=status.HTTP_202_ACCEPTED)
+async def retry_webhook(
+    webhook_id: int,
+    background_tasks: BackgroundTasks,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)
 ):
-    """Process webhook in background"""
+    """
+    Retry a failed webhook delivery with validation and background processing.
+    """
+    # Get webhook event
+    webhook_event = db.query(WebhookEvent).get(webhook_id)
+    
+    if not webhook_event:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Webhook event not found"
+        )
+    
+    # Verify access through project ownership
+    if webhook_event.project_id:
+        project = db.query(Project).filter(
+            Project.id == webhook_event.project_id,
+            Project.owner_id == current_user.id
+        ).first()
+        
+        if not project:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Access denied to this webhook event"
+            )
+    
+    # Validate webhook can be retried
+    if webhook_event.status != "failed":
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Cannot retry webhook with status: {webhook_event.status}"
+        )
+    
+    if webhook_event.delivery_attempts >= 3:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Maximum retry attempts exceeded"
+        )
+    
+    # Queue retry in background
+    background_tasks.add_task(
+        retry_webhook_async,
+        db,
+        webhook_id,
+        current_user.id
+    )
+    
+    return JSONResponse(
+        status_code=status.HTTP_202_ACCEPTED,
+        content={
+            "status": "accepted",
+            "message": "Webhook retry queued",
+            "webhook_id": webhook_id,
+            "attempt": webhook_event.delivery_attempts + 1,
+            "timestamp": datetime.utcnow().isoformat()
+        }
+    )
+
+# Background task functions
+async def process_webhook_async(
+    db: Session,
+    payload: Dict[str, Any],
+    event_type: str,
+    signature: Optional[str],
+    headers: Dict[str, str],
+    project_id: Optional[int]
+):
+    """Process webhook asynchronously."""
     from app.database import SessionLocal
-    db = SessionLocal()
+    local_db = SessionLocal()
     
     try:
-        webhook_event = db.query(WebhookEventModel).filter(
-            WebhookEventModel.id == event_id
-        ).first()
-        
-        if not webhook_event:
-            return
-        
-        webhook_event.status = "processing"
-        db.commit()
-        
-        # Try to find matching project
-        payload = webhook_event.payload
-        project = find_project_from_webhook(db, payload)
-        
-        if project:
-            webhook_event.project_id = project.id
-            
-            # Verify signature if available
-            if project.webhook_secret and signature:
-                try:
-                    is_valid = WebhookVerifier.verify_github_signature(
-                        raw_body,
-                        signature,
-                        project.webhook_secret
-                    )
-                    if not is_valid:
-                        webhook_event.status = "failed_verification"
-                        db.commit()
-                        return
-                except Exception as e:
-                    print(f"Signature verification error: {e}")
-        
-        # Process based on event type
-        try:
-            if event_type == "workflow_run":
-                process_workflow_run_event(db, project, payload) if project else None
-            elif event_type == "check_run":
-                process_check_run_event(db, project, payload) if project else None
-            elif event_type == "push":
-                process_push_event(db, project, payload) if project else None
-        except Exception as e:
-            print(f"Error processing {event_type} event: {e}")
-        
-        webhook_event.status = "processed"
-        webhook_event.processed_at = datetime.now(timezone.utc)
-        db.commit()
-        
+        WebhookService.process_github_webhook(
+            db=local_db,
+            payload=payload,
+            event_type=event_type,
+            signature=signature,
+            headers=headers
+        )
     except Exception as e:
-        print(f"Error in background webhook processing: {e}")
-        if db and 'webhook_event' in locals():
-            webhook_event.status = "failed"
-            db.commit()
+        logger.error("Background webhook processing failed: %s", e, exc_info=True)
     finally:
-        if db:
-            db.close()
+        local_db.close()
 
-def process_test_webhook(event_id: int, db: Session):
-    """Process test webhook"""
-    webhook_event = db.query(WebhookEventModel).filter(
-        WebhookEventModel.id == event_id
-    ).first()
+async def retry_webhook_async(db: Session, webhook_id: int, user_id: int):
+    """Retry webhook asynchronously."""
+    from app.database import SessionLocal
+    local_db = SessionLocal()
     
-    if webhook_event:
-        webhook_event.status = "processed"
-        webhook_event.processed_at = datetime.now(timezone.utc)
-        db.commit()
-
-def find_project_from_webhook(db: Session, payload: Dict[str, Any]) -> Optional[Project]:
-    """Find project matching webhook repository"""
-    repo_url = payload.get("repository", {}).get("html_url")
-    if not repo_url:
-        return None
-    
-    project = db.query(Project).filter(
-        Project.repository_url.ilike(f"%{repo_url}%")
-    ).first()
-    
-    return project
-
-def process_workflow_run_event(db: Session, project: Project, payload: Dict[str, Any]):
-    """Process GitHub workflow_run event"""
-    workflow_run = payload.get("workflow_run", {})
-    conclusion = workflow_run.get("conclusion")
-    head_sha = workflow_run.get("head_sha")
-    
-    if conclusion in ["success", "failure", "cancelled"] and head_sha:
-        build = db.query(Build).filter(
-            Build.project_id == project.id,
-            Build.commit_hash == head_sha
-        ).first()
-        
-        if build:
-            build.status = "success" if conclusion == "success" else "failed"
-            build.completed_at = datetime.now(timezone.utc)
-            db.commit()
-
-def process_check_run_event(db: Session, project: Project, payload: Dict[str, Any]):
-    """Process GitHub check_run event"""
-    check_run = payload.get("check_run", {})
-    conclusion = check_run.get("conclusion")
-    head_sha = check_run.get("head_sha")
-    
-    if conclusion in ["success", "failure"] and head_sha:
-        build = db.query(Build).filter(
-            Build.project_id == project.id,
-            Build.commit_hash == head_sha
-        ).first()
-        
-        if build:
-            build.status = "success" if conclusion == "success" else "failed"
-            db.commit()
-
-def process_push_event(db: Session, project: Project, payload: Dict[str, Any]):
-    """Process GitHub push event"""
-    head_commit = payload.get("head_commit", {})
-    commit_hash = head_commit.get("id")
-    commit_message = head_commit.get("message")
-    
-    if commit_hash and project.status == "active":
-        from app.services.build_runner import trigger_build
-        trigger_build(db, project.id, commit_hash, commit_message)
+    try:
+        success = WebhookService.retry_failed_webhook(local_db, webhook_id)
+        if success:
+            logger.info("User %s retried webhook %s", user_id, webhook_id)
+        else:
+            logger.warning("User %s failed to retry webhook %s", user_id, webhook_id)
+    except Exception as e:
+        logger.error("Webhook retry failed: %s", e, exc_info=True)
+    finally:
+        local_db.close()
